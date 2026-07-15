@@ -1,38 +1,30 @@
-// This line declares which "package" this file belongs to.
-// In Go, a program that you can run must have a package called "main".
-// (Libraries you import have other names, like "opcua" or "fmt".)
 package main
 
-// The import block lists the other packages this file uses.
-// Standard-library packages are single words ("fmt", "os").
-// Third-party ones are full paths that look like URLs ("github.com/...").
-// Go is strict: if you import something and don't use it, it won't compile.
 import (
 	"bufio"
-	"context" // for timeouts/cancellation — passed into network calls
+	"context"
 	"crypto/rand"
 	"crypto/rsa"
 	"crypto/x509"
 	"crypto/x509/pkix"
 	"encoding/json"
 	"encoding/pem"
-	"flag" // parses command-line flags like -endpoint
-	"fmt"  // formatted printing (Println, Printf, etc.)
+	"flag"
+	"fmt"
 	"math/big"
 	"net/url"
-	"os" // access to os.Stderr and os.Exit for error handling
-
-	// to sort the list of auth methods alphabetically
+	"os"
 	"strconv"
 	"strings"
-	"time" // for time.Second when building the timeout
+	"time"
 
-	// The gopcua library, split into two packages we need:
 	"github.com/fatih/color"
-	"github.com/gopcua/opcua" // the client + GetEndpoints entry points
+	"github.com/gopcua/opcua"
 	"github.com/gopcua/opcua/id"
-	"github.com/gopcua/opcua/ua" // the OPC-UA type definitions (enums, structs)
+	"github.com/gopcua/opcua/ua"
 )
+
+var verbose bool
 
 type endpointDetails struct {
 	ref             int
@@ -67,6 +59,8 @@ const banner = `
  #    # #####  #            #    # ######    #####  #      #      #    # #  # # 
  #    # #      #    #       #    # #    #    #   #  #      #    # #    # #   ## 
   ####  #       ####         ####  #    #    #    # ######  ####   ####  #    # 
+
+by cdino
 `
 
 func main() {
@@ -82,6 +76,8 @@ func main() {
 	probe_credentials := flag.Bool("probe-creds", false, "Attempt authentication with credentials")
 	probe_write := flag.Bool("probe-write", false, "Scan for writeable tags")
 	rewrite_host := flag.Bool("rewrite-host", false, "Rewrite the endpoint host with the provided host. required for scanning servers behind NAT/Firewalls")
+
+	flag.BoolVar(&verbose, "verbose", false, "enable verbose output")
 	flag.Parse()
 
 	var mass_scan = false
@@ -399,6 +395,7 @@ func browseTags(ctx context.Context, n *opcua.Node, level int, path string, tags
 		//fmt.Printf("Access Level: %s\n", access_level)
 		writable := access_level&ua.AccessLevelTypeCurrentWrite != 0
 		if writable {
+			color.Green("[+] Found writeable tag: " + n.ID.String())
 			tag := tag{
 				NodeID:      n.ID,
 				BrowseName:  browse_name.Value.String(),
@@ -502,4 +499,10 @@ func shortPolicy(uri string) string {
 func prettyPrint(i interface{}) string {
 	s, _ := json.MarshalIndent(i, "", "\t")
 	return string(s)
+}
+
+func verboseOutput(output string, args ...interface{}) {
+	if verbose {
+		fmt.Printf(output, args...)
+	}
 }
