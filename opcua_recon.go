@@ -347,9 +347,18 @@ func runWriteableProbe(ctx context.Context, endpoint *ua.EndpointDescription, us
 		return
 	}
 	visited := make(map[string]bool)
-	var tags []tag
-	err = browseTags(ctx, c.Node(id), 0, "", &tags, visited)
-	fmt.Print(prettyPrint(tags))
+	var nodes []*ua.NodeID
+	start := time.Now()
+	collectNodes(ctx, c.Node(id), 0, visited, &nodes)
+	verboseOutput("collected %d nodes in %s\n", len(nodes), time.Since(start))
+	color.Green("[+] collected %d nodes", len(nodes))
+
+	tags := readAllChunked(ctx, c, nodes)
+	color.Green("[+] %d writeable tags found", len(tags))
+	verboseOutput("found %d writeable tags in %s\n", len(tags), time.Since(start))
+
+	//fmt.Print(prettyPrint(tags))
+	os.Exit(1)
 
 }
 
@@ -420,6 +429,100 @@ func browseTags(ctx context.Context, n *opcua.Node, level int, path string, tags
 	}
 
 	return nil
+}
+
+func collectNodes(ctx context.Context, n *opcua.Node, level int, visited map[string]bool, out *[]*ua.NodeID) {
+	if level > maxDepth || ctx.Err() != nil {
+		return
+	}
+	key := n.ID.String()
+	if visited[key] {
+		return
+	}
+	visited[key] = true
+	if key == "i=2253" { // skip server diagnostics subtree
+		return
+	}
+
+	*out = append(*out, n.ID)
+
+	nodes, err := n.ReferencedNodes(ctx, id.HierarchicalReferences, ua.BrowseDirectionForward, ua.NodeClassAll, true)
+	if err != nil {
+		verboseOutput("browse failed at %s: %v\n", key, err)
+		return
+	}
+	for _, child := range nodes {
+		collectNodes(ctx, child, level+1, visited, out)
+	}
+}
+
+const attrsPerNode = 4 // NodeClass, UserAccessLevel, BrowseName, Value — order matters
+func readNodeChunk(ctx context.Context, c *opcua.Client, ids []*ua.NodeID) ([]tag, error) {
+	attsToRead := make([]*ua.ReadValueID, 0, len(ids)*attrsPerNode)
+	for _, nodeId := range ids {
+		attsToRead = append(attsToRead,
+			&ua.ReadValueID{NodeID: nodeId, AttributeID: ua.AttributeIDNodeClass},
+			&ua.ReadValueID{NodeID: nodeId, AttributeID: ua.AttributeIDUserAccessLevel},
+			&ua.ReadValueID{NodeID: nodeId, AttributeID: ua.AttributeIDBrowseName},
+			&ua.ReadValueID{NodeID: nodeId, AttributeID: ua.AttributeIDValue},
+		)
+	}
+	resp, err := c.Read(ctx, &ua.ReadRequest{NodesToRead: attsToRead})
+	if err != nil {
+		return nil, err
+	}
+
+	var writeable []tag
+	for i, nodeId := range ids {
+		base := i * attrsPerNode // results[base .. base+attrsPerNode) belong to ids[i]
+		nodeClass := resp.Results[base+0]
+		accessLevel := resp.Results[base+1]
+		browseName := resp.Results[base+2]
+		val := resp.Results[base+3]
+
+		if nodeClass.Status != ua.StatusOK || ua.NodeClass(nodeClass.Value.Int()) != ua.NodeClassVariable {
+			continue // not a variable, or couldn't read class
+		}
+		if accessLevel.Status != ua.StatusOK {
+			continue
+		}
+		access := ua.AccessLevelType(accessLevel.Value.Uint())
+		if access&ua.AccessLevelTypeCurrentWrite == 0 {
+			continue // not writeable
+		}
+
+		tag := tag{
+			NodeID:      nodeId,
+			AccessLevel: access,
+			Writable:    true,
+		}
+		if browseName.Status == ua.StatusOK && browseName.Value != nil {
+			tag.BrowseName = browseName.Value.String()
+		}
+		if val != nil && val.Value != nil {
+			tag.Value = val.Value.Value()
+		}
+		writeable = append(writeable, tag)
+	}
+	return writeable, nil
+}
+
+const chunkSize = 500 // 500 nodes * 4 attrs = 2000 ReadValueIDs per request
+func readAllChunked(ctx context.Context, c *opcua.Client, ids []*ua.NodeID) []tag {
+	var all []tag
+	for start := 0; start < len(ids); start += chunkSize {
+		end := start + chunkSize
+		if end > len(ids) {
+			end = len(ids)
+		}
+		found, err := readNodeChunk(ctx, c, ids[start:end])
+		if err != nil {
+			verboseOutput("chunk [%d:%d] read failed: %v\n", start, end, err)
+			continue // one bad chunk doesn't abort the rest
+		}
+		all = append(all, found...)
+	}
+	return all
 }
 
 func generateCertificate() {
