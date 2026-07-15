@@ -348,9 +348,12 @@ func runWriteableProbe(ctx context.Context, endpoint *ua.EndpointDescription, us
 	}
 	visited := make(map[string]bool)
 	var tags []tag
-	err = browseTags(ctx, c.Node(id), 0, "", &tags, visited)
-	fmt.Print(prettyPrint(tags))
+	start := time.Now()
 
+	err = browseTags(ctx, c.Node(id), 0, "", &tags, visited)
+	verboseOutput("collected %d writeable tags in %s\n", len(tags), time.Since(start))
+	//fmt.Print(prettyPrint(tags))
+	os.Exit(0)
 }
 
 func browseTags(ctx context.Context, n *opcua.Node, level int, path string, tags *[]tag, visited map[string]bool) (err error) {
@@ -395,7 +398,7 @@ func browseTags(ctx context.Context, n *opcua.Node, level int, path string, tags
 		//fmt.Printf("Access Level: %s\n", access_level)
 		writable := access_level&ua.AccessLevelTypeCurrentWrite != 0
 		if writable {
-			color.Green("[+] Found writeable tag: " + n.ID.String())
+			//color.Green("[+] Found writeable tag: " + n.ID.String())
 			tag := tag{
 				NodeID:      n.ID,
 				BrowseName:  browse_name.Value.String(),
