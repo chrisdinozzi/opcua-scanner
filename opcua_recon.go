@@ -3,15 +3,9 @@ package main
 import (
 	"bufio"
 	"context"
-	"crypto/rand"
-	"crypto/rsa"
-	"crypto/x509"
-	"crypto/x509/pkix"
 	"encoding/json"
-	"encoding/pem"
 	"flag"
 	"fmt"
-	"math/big"
 	"net/url"
 	"os"
 	"strconv"
@@ -27,14 +21,14 @@ import (
 var verbose bool
 
 type endpointDetails struct {
-	ref             int
-	url             string
-	security_mode   string
-	security_policy string
-	security_level  int
-	offers_anon     bool
-	offers_creds    bool
-	methods         []string
+	ref            int
+	url            string
+	securityMode   string
+	securityPolicy string
+	securityLevel  int
+	offersAnon     bool
+	offersCreds    bool
+	methods        []string
 }
 
 type tag struct {
@@ -68,21 +62,21 @@ func main() {
 
 	endpoint := flag.String("endpoint", "", "OPC-UA endpoint URL")
 	ip := flag.String("ip", "", "OPC-UA server IP")
-	ip_file := flag.String("ip-file", "", "New line deliminated file of IPs to scan")
+	ipFile := flag.String("ip-file", "", "New line deliminated file of IPs to scan")
 	port := flag.Int("port", 4840, "OPC-UA server port. Default 4840")
-	probe_anon := flag.Bool("probe-anon", false, "also actively test whether anonymous login truly works")
+	probeAnon := flag.Bool("probe-anon", false, "also actively test whether anonymous login truly works")
 	user := flag.String("user", "", "Username for authentication")
 	pass := flag.String("pass", "", "Password for authentication")
-	probe_credentials := flag.Bool("probe-creds", false, "Attempt authentication with credentials")
-	probe_write := flag.Bool("probe-write", false, "Scan for writeable tags")
-	rewrite_host := flag.Bool("rewrite-host", false, "Rewrite the endpoint host with the provided host. required for scanning servers behind NAT/Firewalls")
+	probeCreds := flag.Bool("probe-creds", false, "Attempt authentication with credentials")
+	probeWrite := flag.Bool("probe-write", false, "Scan for writeable tags")
+	rewriteHost := flag.Bool("rewrite-host", false, "Rewrite the endpoint host with the provided host. required for scanning servers behind NAT/Firewalls")
 
 	flag.BoolVar(&verbose, "verbose", false, "enable verbose output")
 	flag.Parse()
 
-	var mass_scan = false
-	if *ip_file != "" {
-		mass_scan = true
+	var massScan = false
+	if *ipFile != "" {
+		massScan = true
 	}
 	if *ip != "" {
 		url := fmt.Sprintf("opc.tcp://%s:%d", *ip, *port)
@@ -92,29 +86,29 @@ func main() {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	if mass_scan == true {
-		targets := parseIPFile(*ip_file, *port)
+	if massScan == true {
+		targets := parseIPFile(*ipFile, *port)
 		fmt.Println("Targets: ", targets)
 		for i, endpoint := range targets {
 			fmt.Println(i + 1)
-			scanServer(ctx, &endpoint, user, pass, probe_anon, probe_credentials, probe_write, rewrite_host)
+			scanServer(ctx, &endpoint, user, pass, probeAnon, probeCreds, probeWrite, rewriteHost)
 		}
 	} else {
 		fmt.Println("Target: ", *endpoint)
-		scanServer(ctx, endpoint, user, pass, probe_anon, probe_credentials, probe_write, rewrite_host)
+		scanServer(ctx, endpoint, user, pass, probeAnon, probeCreds, probeWrite, rewriteHost)
 	}
 }
 
-func parseIPFile(file_name string, port int) []string {
+func parseIPFile(fileName string, port int) []string {
 	var targets []string
-	targets_file, err := os.Open(file_name)
+	targetsFile, err := os.Open(fileName)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "File Read Failed: %v\n", err)
 		os.Exit(1)
 	}
-	defer targets_file.Close()
+	defer targetsFile.Close()
 
-	scanner := bufio.NewScanner(targets_file)
+	scanner := bufio.NewScanner(targetsFile)
 
 	for scanner.Scan() {
 		//check if a port is appended already to the IP
@@ -129,7 +123,7 @@ func parseIPFile(file_name string, port int) []string {
 	return targets
 }
 
-func scanServer(ctx context.Context, endpoint, user, pass *string, probe_anon, probe_credentials, probe_write, rewrite_host *bool) {
+func scanServer(ctx context.Context, endpoint, user, pass *string, probeAnon, probeCreds, probeWrite, rewriteHost *bool) {
 	endpoints, err := opcua.GetEndpoints(ctx, *endpoint)
 
 	if err != nil {
@@ -139,12 +133,12 @@ func scanServer(ctx context.Context, endpoint, user, pass *string, probe_anon, p
 
 	fmt.Printf("=== %s ===\n%d endpoint(s)\n\n", *endpoint, len(endpoints))
 
-	scanned_endpoints := []endpointDetails{}
+	scannedEndpoints := []endpointDetails{}
 
 	for i, ep := range endpoints {
 		anyAnonymous := false
 		anyCredential := false
-		if *rewrite_host {
+		if *rewriteHost {
 			dialledURL, err := url.Parse(*endpoint)
 			if err != nil {
 				fmt.Println("Error parsing endpoint URL.")
@@ -175,24 +169,24 @@ func scanServer(ctx context.Context, endpoint, user, pass *string, probe_anon, p
 			methods = []string{"(none advertised)"}
 		}
 
-		scanned_endpoints = append(scanned_endpoints, endpointDetails{
-			ref:             i,
-			url:             ep.EndpointURL,
-			security_mode:   ep.SecurityMode.String(),
-			security_policy: ep.SecurityPolicyURI,
-			security_level:  int(ep.SecurityLevel),
-			offers_anon:     anyAnonymous,
-			offers_creds:    anyCredential,
-			methods:         methods})
+		scannedEndpoints = append(scannedEndpoints, endpointDetails{
+			ref:            i,
+			url:            ep.EndpointURL,
+			securityMode:   ep.SecurityMode.String(),
+			securityPolicy: ep.SecurityPolicyURI,
+			securityLevel:  int(ep.SecurityLevel),
+			offersAnon:     anyAnonymous,
+			offersCreds:    anyCredential,
+			methods:        methods})
 
-		fmt.Printf("[Endpoint %d]\n", scanned_endpoints[i].ref+1)
-		fmt.Printf("  URL:             %s\n", scanned_endpoints[i].url)
-		fmt.Printf("  Security mode:   %s\n", scanned_endpoints[i].security_mode)
-		fmt.Printf("  Security policy: %s\n", scanned_endpoints[i].security_policy)
-		fmt.Printf("  Security level:  %d\n", scanned_endpoints[i].security_level)
-		fmt.Printf("  Allows Anonymous Login:  %t\n", scanned_endpoints[i].offers_anon)
-		fmt.Printf("  Allows Credential Login:  %t\n", scanned_endpoints[i].offers_creds)
-		fmt.Printf("  Supported Login Methods:  %v\n", scanned_endpoints[i].methods)
+		fmt.Printf("[Endpoint %d]\n", scannedEndpoints[i].ref+1)
+		fmt.Printf("  URL:             %s\n", scannedEndpoints[i].url)
+		fmt.Printf("  Security mode:   %s\n", scannedEndpoints[i].securityMode)
+		fmt.Printf("  Security policy: %s\n", scannedEndpoints[i].securityPolicy)
+		fmt.Printf("  Security level:  %d\n", scannedEndpoints[i].securityLevel)
+		fmt.Printf("  Allows Anonymous Login:  %t\n", scannedEndpoints[i].offersAnon)
+		fmt.Printf("  Allows Credential Login:  %t\n", scannedEndpoints[i].offersCreds)
+		fmt.Printf("  Supported Login Methods:  %v\n", scannedEndpoints[i].methods)
 		fmt.Println("***")
 		switch {
 		case anyAnonymous && anyCredential:
@@ -205,16 +199,22 @@ func scanServer(ctx context.Context, endpoint, user, pass *string, probe_anon, p
 		default:
 			fmt.Println("[-] No user identity tokens advertised (weird — check manually)")
 		}
-		if *probe_anon && anyAnonymous {
+
+		if ep.SecurityMode != ua.MessageSecurityModeNone {
+			color.Red("[-] Security is enabled, cannot probe: " + ep.SecurityMode.String())
+			continue
+		}
+
+		if *probeAnon && anyAnonymous {
 			color.Green("[*] Checking if Anonymous access works...")
 			runAnonymousProbe(ctx, ep, *endpoint)
 		}
 
-		if *probe_credentials && anyCredential {
+		if *probeCreds && anyCredential {
 			color.Green("[*] Checking if Credential access works...")
 			runCredentialProbe(ctx, ep, *user, *pass)
 		}
-		if *probe_write && (anyAnonymous || anyCredential) {
+		if *probeWrite && (anyAnonymous || anyCredential) {
 			runWriteableProbe(ctx, ep, *user, *pass, anyAnonymous)
 		}
 		//os.Exit(0)
@@ -260,24 +260,17 @@ func runCredentialProbe(ctx context.Context, endpoint *ua.EndpointDescription, u
 	defer cancel()
 	fmt.Printf("[*] Attempting login with %s:%s\n", user, pass)
 
-	// sec_policy := shortPolicy(endpoint.SecurityPolicyURI)
-	// security_mode := endpoint.SecurityMode.String()
+	// secPolicy := shortPolicy(endpoint.SecurityPolicyURI)
+	// securityMode := endpoint.SecurityMode.String()
 
 	opts := []opcua.Option{
-		// opcua.SecurityPolicy(sec_policy),
-		// opcua.SecurityModeString(security_mode),
+		// opcua.SecurityPolicy(secPolicy),
+		// opcua.SecurityModeString(securityMode),
 		opcua.AuthUsername(user, pass),
 		opcua.SecurityFromEndpoint(endpoint, ua.UserTokenTypeUserName),
 		opcua.ApplicationURI("urn:cdino:opcua-recon"),
 	}
 
-	if endpoint.SecurityMode != ua.MessageSecurityModeNone {
-		generateCertificate()
-		opts = append(opts,
-			opcua.CertificateFile("client_cert.pem"),
-			opcua.PrivateKeyFile("client_key.pem"),
-		)
-	}
 	c, err := opcua.NewClient(endpoint.EndpointURL, opts...)
 	if err != nil {
 		fmt.Printf("[-] could not build client: %v\n", err)
@@ -294,7 +287,7 @@ func runCredentialProbe(ctx context.Context, endpoint *ua.EndpointDescription, u
 	color.Green("[+] credential login SUCCEEDED")
 }
 
-func runWriteableProbe(ctx context.Context, endpoint *ua.EndpointDescription, user string, pass string, isAnon bool) {
+func runWriteableProbe(ctx context.Context, endpoint *ua.EndpointDescription, user, pass string, isAnon bool) {
 	ctx, cancel := context.WithTimeout(ctx, 60*time.Second)
 	defer cancel()
 	var c *opcua.Client
@@ -311,6 +304,7 @@ func runWriteableProbe(ctx context.Context, endpoint *ua.EndpointDescription, us
 			color.Red("[-] credential login REJECTED (%v)\n", err)
 			return
 		}
+		//TODO review this flow
 	} else { //cred auth
 		fmt.Printf("[*] Attempting to find writeable tags with %s:%s\n", user, pass)
 
@@ -319,14 +313,6 @@ func runWriteableProbe(ctx context.Context, endpoint *ua.EndpointDescription, us
 			opcua.SecurityFromEndpoint(endpoint, ua.UserTokenTypeUserName),
 		}
 
-		if endpoint.SecurityMode != ua.MessageSecurityModeNone {
-			generateCertificate()
-			opts = append(opts,
-				opcua.CertificateFile("client_cert.pem"),
-				opcua.PrivateKeyFile("client_key.pem"),
-				opcua.ApplicationURI("urn:cdino:opcua-recon"),
-			)
-		}
 		c, err = opcua.NewClient(endpoint.EndpointURL, opts...)
 		if err != nil {
 			fmt.Printf("[-] could not build client: %v\n", err)
@@ -341,7 +327,7 @@ func runWriteableProbe(ctx context.Context, endpoint *ua.EndpointDescription, us
 	defer c.Close(ctx)
 
 	var nodeID string = "i=85" //TODO: make this programatic or user supplied (or both!)
-	id, err := ua.ParseNodeID(nodeID)
+	startNodeId, err := ua.ParseNodeID(nodeID)
 	if err != nil {
 		fmt.Printf("invalid node id: %s", err)
 		return
@@ -349,86 +335,19 @@ func runWriteableProbe(ctx context.Context, endpoint *ua.EndpointDescription, us
 	visited := make(map[string]bool)
 	var nodes []*ua.NodeID
 	start := time.Now()
-	collectNodes(ctx, c.Node(id), 0, visited, &nodes)
+	collectNodes(ctx, c.Node(startNodeId), 0, visited, &nodes)
 	verboseOutput("collected %d nodes in %s\n", len(nodes), time.Since(start))
 	color.Green("[+] collected %d nodes", len(nodes))
 
 	tags := readAllChunked(ctx, c, nodes)
 	color.Green("[+] %d writeable tags found", len(tags))
 	verboseOutput("found %d writeable tags in %s\n", len(tags), time.Since(start))
-
-	//fmt.Print(prettyPrint(tags))
-	os.Exit(1)
-
-}
-
-func browseTags(ctx context.Context, n *opcua.Node, level int, path string, tags *[]tag, visited map[string]bool) (err error) {
-
-	if level > maxDepth || ctx.Err() != nil {
-		return nil
+	for _, tag := range tags {
+		fmt.Printf("%s: %s\n", tag.BrowseName, tag.Description)
 	}
 
-	key := n.ID.String()
-	if visited[key] {
-		return nil
-	}
-	visited[key] = true
-	if key == "i=2253" { // skip server meta data tags
-		return nil
-	}
+	verboseOutput(prettyPrint(tags))
 
-	attrs, err := n.Attributes(ctx,
-		ua.AttributeIDNodeClass,       //0
-		ua.AttributeIDUserAccessLevel, //1
-		ua.AttributeIDBrowseName,      //2
-		ua.AttributeIDDescription,     //3
-		ua.AttributeIDDataType,        //4
-		ua.AttributeIDValue,           //5
-
-	)
-
-	if err != nil {
-		fmt.Printf("Attr read error: %v\n", err)
-		return nil
-	}
-
-	node_class := ua.NodeClass(attrs[0].Value.Int())
-	browse_name := attrs[2]
-	description := attrs[3]
-	path = path + "." + browse_name.Value.String()
-
-	if node_class == ua.NodeClassVariable {
-		value := attrs[5].Value
-		//fmt.Printf("Value: %v\n", value)
-		access_level := ua.AccessLevelType(attrs[1].Value.Uint())
-		//fmt.Printf("Access Level: %s\n", access_level)
-		writable := access_level&ua.AccessLevelTypeCurrentWrite != 0
-		if writable {
-			color.Green("[+] Found writeable tag: " + n.ID.String())
-			tag := tag{
-				NodeID:      n.ID,
-				BrowseName:  browse_name.Value.String(),
-				Description: description.Value.String(),
-				Path:        path,
-				Value:       value.Value(),
-				Writable:    writable,
-			}
-			*tags = append(*tags, tag)
-		}
-
-	}
-
-	nodes, err := n.ReferencedNodes(ctx, id.HierarchicalReferences, ua.BrowseDirectionForward, ua.NodeClassAll, true)
-
-	if err != nil {
-		fmt.Printf("Couldn't get referenced nodes: %v", err)
-		return nil
-	}
-	for _, node := range nodes {
-		browseTags(ctx, node, level+1, path, tags, visited)
-	}
-
-	return nil
 }
 
 func collectNodes(ctx context.Context, n *opcua.Node, level int, visited map[string]bool, out *[]*ua.NodeID) {
@@ -523,44 +442,6 @@ func readAllChunked(ctx context.Context, c *opcua.Client, ids []*ua.NodeID) []ta
 		all = append(all, found...)
 	}
 	return all
-}
-
-func generateCertificate() {
-	appURI, _ := url.Parse("urn:cdino:opcua-recon")
-
-	priv, err := rsa.GenerateKey(rand.Reader, 2048)
-	if err != nil {
-		panic(err)
-	}
-
-	template := x509.Certificate{
-		SerialNumber: big.NewInt(time.Now().UnixNano()),
-		Subject: pkix.Name{
-			CommonName:   "opcua-recon-client",
-			Organization: []string{"cdino"},
-		},
-		NotBefore:             time.Now().Add(-time.Hour),
-		NotAfter:              time.Now().AddDate(1, 0, 0), // valid 1 year
-		KeyUsage:              x509.KeyUsageDigitalSignature | x509.KeyUsageKeyEncipherment | x509.KeyUsageCertSign,
-		ExtKeyUsage:           []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth, x509.ExtKeyUsageServerAuth},
-		BasicConstraintsValid: true,
-		IsCA:                  true,
-		URIs:                  []*url.URL{appURI},
-	}
-
-	der, err := x509.CreateCertificate(rand.Reader, &template, &template, &priv.PublicKey, priv)
-	if err != nil {
-		panic(err)
-	}
-	certOut, _ := os.Create("client_cert.pem")
-	pem.Encode(certOut, &pem.Block{Type: "CERTIFICATE", Bytes: der})
-	certOut.Close()
-
-	keyBytes := x509.MarshalPKCS1PrivateKey(priv)
-	keyOut, _ := os.Create("client_key.pem")
-	pem.Encode(keyOut, &pem.Block{Type: "RSA PRIVATE KEY", Bytes: keyBytes})
-	keyOut.Close()
-
 }
 
 func tokenTypeName(t ua.UserTokenType) string {
