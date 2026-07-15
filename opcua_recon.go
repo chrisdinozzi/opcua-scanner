@@ -10,17 +10,51 @@ package main
 import (
 	"bufio"
 	"context" // for timeouts/cancellation — passed into network calls
-	"flag"    // parses command-line flags like -endpoint
-	"fmt"     // formatted printing (Println, Printf, etc.)
-	"os"      // access to os.Stderr and os.Exit for error handling
-	"sort"    // to sort the list of auth methods alphabetically
-	"time"    // for time.Second when building the timeout
+	"crypto/rand"
+	"crypto/rsa"
+	"crypto/x509"
+	"crypto/x509/pkix"
+	"encoding/json"
+	"encoding/pem"
+	"flag" // parses command-line flags like -endpoint
+	"fmt"  // formatted printing (Println, Printf, etc.)
+	"math/big"
+	"net/url"
+	"os"     // access to os.Stderr and os.Exit for error handling
+	"regexp" // to sort the list of auth methods alphabetically
+	"time"   // for time.Second when building the timeout
 
 	// The gopcua library, split into two packages we need:
 	"github.com/fatih/color"
-	"github.com/gopcua/opcua"    // the client + GetEndpoints entry points
+	"github.com/gopcua/opcua" // the client + GetEndpoints entry points
+	"github.com/gopcua/opcua/id"
 	"github.com/gopcua/opcua/ua" // the OPC-UA type definitions (enums, structs)
 )
+
+type endpointDetails struct {
+	ref             int
+	url             string
+	security_mode   string
+	security_policy string
+	security_level  int
+	offers_anon     bool
+	offers_creds    bool
+	methods         []string
+}
+
+type tag struct {
+	NodeID      *ua.NodeID
+	NodeClass   ua.NodeClass
+	BrowseName  string
+	Description string
+	AccessLevel ua.AccessLevelType
+	Path        string
+	DataType    string
+	Writable    bool
+	Value       interface{}
+}
+
+const maxDepth = 100
 
 const banner = `
                                                                                 
@@ -37,22 +71,17 @@ const banner = `
 func main() {
 	fmt.Println(banner)
 
-	// flag.String defines a string command-line flag.
-	//   arg 1: the flag name, so "-endpoint" on the command line
-	//   arg 2: the default value if the user doesn't pass it
-	//   arg 3: the help text shown by -h
-	// It returns a *pointer* to a string (that's what the * means in the type).
-	// We'll dereference it later with *endpoint to read the actual value.
 	endpoint := flag.String("endpoint", "", "OPC-UA endpoint URL")
 	ip := flag.String("ip", "", "OPC-UA server IP")
 	ip_file := flag.String("ip-file", "", "New line deliminated file of IPs to scan")
 	port := flag.Int("port", 4840, "OPC-UA server port. Default 4840")
-	// A bool flag. Present ("-probe") = true, absent = false.
-	probe := flag.Bool("probe", false, "also actively test whether anonymous login truly works")
-
-	// This actually parses os.Args and fills in the variables above.
-	// Nothing is populated until Parse() runs.
+	probe_anon := flag.Bool("probe-anon", false, "also actively test whether anonymous login truly works")
+	user := flag.String("user", "", "Username for authentication")
+	pass := flag.String("pass", "", "Password for authentication")
+	probe_credentials := flag.Bool("probe-creds", false, "Attempt authentication with credentials")
+	probe_write := flag.Bool("probe-write", false, "Scan for writeable tags")
 	flag.Parse()
+	fmt.Printf("Username: %s\nPassword: %s\n", *user, *pass)
 
 	var mass_scan = false
 	if *ip_file != "" {
@@ -64,32 +93,23 @@ func main() {
 
 	}
 
-	if mass_scan == true {
-		parseIPFile(*ip_file)
-	}
-
-	color.Blue("Target: ", *endpoint)
-
-	// ":=" is Go's "declare and assign" operator — it creates a new variable
-	// and infers its type from the right-hand side. (You'd use "=" to assign
-	// to an already-declared variable.)
-	//
-	// A context carries a deadline. context.WithTimeout returns two things:
-	// the context itself, and a "cancel" function you must call to release
-	// its resources. Go functions can return multiple values — that's the
-	// (ctx, cancel) on the left.
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-
-	// "defer" schedules a function call to run when the surrounding function
-	// (main) returns, no matter how it exits. It's Go's cleanup mechanism —
-	// like a finally block. Here it guarantees we release the context.
+	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	scanServer(ctx, endpoint, probe)
-
+	if mass_scan == true {
+		targets := parseIPFile(*ip_file, *port)
+		fmt.Println("Targets: ", targets)
+		for i, endpoint := range targets {
+			fmt.Println(i + 1)
+			scanServer(ctx, &endpoint, user, pass, probe_anon, probe_credentials, probe_write)
+		}
+	} else {
+		fmt.Println("Target: ", *endpoint)
+		scanServer(ctx, endpoint, user, pass, probe_anon, probe_credentials, probe_write)
+	}
 }
 
-func parseIPFile(file_name string) []string {
+func parseIPFile(file_name string, port int) []string {
 	var targets []string
 	targets_file, err := os.Open(file_name)
 	if err != nil {
@@ -101,194 +121,345 @@ func parseIPFile(file_name string) []string {
 	scanner := bufio.NewScanner(targets_file)
 
 	for scanner.Scan() {
-		targets = append(targets, scanner.Text())
+		//check if a port is appended already to the IP
+		target := scanner.Text()
+		match, _ := regexp.MatchString(`\d*.\d*.\d*.\d*.:\d*`, target)
+		if !match {
+			target = target + string(port)
+		}
+		target = "opc.tcp://" + target
+		targets = append(targets, target)
 	}
 
-	fmt.Println(targets)
 	return targets
 }
 
-func scanServer(ctx context.Context, endpoint *string, probe *bool) {
-	// Call GetEndpoints. It returns two values: the result, and an error.
-	// This "value, err := call()" pattern is *everywhere* in Go — Go doesn't
-	// use exceptions; functions return an error value you're expected to check.
-	//
-	// GetEndpoints runs the pre-auth discovery handshake (HEL/ACK -> OPN(None)
-	// -> GetEndpoints) under the hood and gives back the advertised endpoints.
+func scanServer(ctx context.Context, endpoint, user, pass *string, probe_anon, probe_credentials, probe_write *bool) {
 	endpoints, err := opcua.GetEndpoints(ctx, *endpoint)
 
-	// The idiomatic error check: "if err is not nil, something went wrong."
-	// nil is Go's null/none. If GetEndpoints succeeded, err is nil.
 	if err != nil {
-		// Fprintf prints to a given writer — here os.Stderr (the error stream)
-		// rather than normal output. %v is a general-purpose "print any value"
-		// verb; \n is a newline.
 		fmt.Fprintf(os.Stderr, "GetEndpoints failed: %v\n", err)
-		// os.Exit(1) quits immediately with exit code 1 (non-zero = failure).
 		os.Exit(1)
 	}
 
-	// Printf with format verbs: %s inserts a string, %d inserts an integer.
-	// len(endpoints) gives the number of items in the slice (Go's dynamic array).
 	fmt.Printf("=== %s ===\n%d endpoint(s)\n\n", *endpoint, len(endpoints))
 
-	// Plain bool variables, both starting false. We'll flip them as we discover
-	// what kinds of authentication the server advertises.
 	anyAnonymous := false
 	anyCredential := false
 
-	// A "map" is Go's hash table / dictionary. map[string]bool means
-	// "keys are strings, values are bools". make() allocates an empty one.
-	// We use it as a set: presence of a key means "we saw this method".
 	seen := make(map[string]bool)
+	scanned_endpoints := []endpointDetails{}
 
-	// "for ... range" iterates over a slice. It yields two values each loop:
-	// the index (i) and a copy of the element (ep). Since we want both here,
-	// we take both.
 	for i, ep := range endpoints {
-		// i is 0-based, so i+1 makes the display start at 1.
-		fmt.Printf("[Endpoint %d]\n", i+1)
 
-		// ep is an *ua.EndpointDescription. The dot accesses its fields.
-		// EndpointURL, SecurityMode, etc. are fields defined by the library.
-		fmt.Printf("  URL:             %s\n", ep.EndpointURL)
-
-		// SecurityMode is an enum type that knows how to print itself as text
-		// (the library gives it a String() method), so %s shows "None"/"Sign"/etc.
-		fmt.Printf("  Security mode:   %s\n", ep.SecurityMode)
-
-		// We pass the long policy URI through our helper (defined below) to
-		// trim it to just the readable tail.
-		fmt.Printf("  Security policy: %s\n", shortPolicy(ep.SecurityPolicyURI))
-		fmt.Printf("  Security level:  %d\n", ep.SecurityLevel)
-
-		// Declare a slice of strings with no initial contents (its zero value
-		// is nil, which append handles fine). We'll collect method names here.
 		var methods []string
 
-		// Loop over the endpoint's accepted authentication policies.
-		// We only care about the value, not the index, so we use "_" for the
-		// index — "_" is Go's throwaway/blank identifier for values you ignore.
 		for _, tok := range ep.UserIdentityTokens {
 			// Convert the numeric token-type enum into a readable label.
 			name := tokenTypeName(tok.TokenType)
 
-			// append adds to a slice and returns the (possibly resized) slice,
-			// which we assign back. Slices don't grow in place; this is the
-			// standard append-and-reassign idiom.
 			methods = append(methods, name)
-
-			// Record the method name in our set.
 			seen[name] = true
 
-			// A "switch" on the token type. Unlike C, Go's switch cases don't
-			// fall through by default — each case stands alone, no "break" needed.
 			switch tok.TokenType {
 			case ua.UserTokenTypeAnonymous:
-				// Anonymous = guest access is on offer.
 				anyAnonymous = true
 			case ua.UserTokenTypeUserName,
 				ua.UserTokenTypeCertificate,
 				ua.UserTokenTypeIssuedToken:
-				// A single case can list multiple values separated by commas.
-				// Any of these means real credentials are needed.
 				anyCredential = true
 			}
 		}
 
-		// If the endpoint advertised no methods at all, show a placeholder.
-		// len() on a slice is its length; 0 means empty.
 		if len(methods) == 0 {
-			// A one-element slice literal: []string{ ...items... }.
 			methods = []string{"(none advertised)"}
 		}
 
-		// %v prints the whole slice, e.g. [Anonymous (guest)].
-		fmt.Printf("  Auth methods:    %v\n\n", methods)
-	}
+		scanned_endpoints = append(scanned_endpoints, endpointDetails{
+			ref:             i,
+			url:             ep.EndpointURL,
+			security_mode:   ep.SecurityMode.String(),
+			security_policy: ep.SecurityPolicyURI,
+			security_level:  int(ep.SecurityLevel),
+			offers_anon:     anyAnonymous,
+			offers_creds:    anyCredential,
+			methods:         methods})
 
-	// Print the summary verdict.
+		fmt.Printf("[Endpoint %d]\n", scanned_endpoints[i].ref+1)
+		fmt.Printf("  URL:             %s\n", scanned_endpoints[i].url)
+		fmt.Printf("  Security mode:   %s\n", scanned_endpoints[i].security_mode)
+		fmt.Printf("  Security policy: %s\n", scanned_endpoints[i].security_policy)
+		fmt.Printf("  Security level:  %d\n", scanned_endpoints[i].security_level)
+		fmt.Printf("  Allows Anonymous Login:  %t\n", scanned_endpoints[i].offers_anon)
+		fmt.Printf("  Allows Credential Login:  %t\n", scanned_endpoints[i].offers_creds)
+		fmt.Printf("  Supported Login Methods:  %v\n", scanned_endpoints[i].methods)
+		fmt.Println("***")
+		switch {
+		case anyAnonymous && anyCredential:
+			color.Green("[+] Anonymous Access Available")
+			color.Yellow("[+] Credential Accesss Available")
+		case anyAnonymous:
+			color.Green("[+] Anonymous Access Available")
+		case anyCredential:
+			color.Yellow("[+] Credential Accesss Available")
+		default:
+			fmt.Println("[-] No user identity tokens advertised (weird — check manually)")
+		}
+		if *probe_anon && anyAnonymous {
+			color.Green("[*] Checking if Anonymous access works...")
+			runAnonymousProbe(ctx, *endpoint)
+		}
+
+		if *probe_credentials && anyCredential {
+			color.Green("[*] Checking if Credential access works...")
+			runCredentialProbe(ctx, ep, *user, *pass)
+		}
+		if *probe_write && (anyAnonymous || anyCredential) {
+			runWriteableProbe(ctx, ep, *user, *pass, anyAnonymous)
+		}
+		os.Exit(0)
+	}
 	fmt.Println("---")
 
-	// A "switch" with no expression after it acts like an if/else-if chain:
-	// each case is a boolean condition, and the first true one runs.
-	switch {
-	case anyAnonymous && anyCredential:
-		// && is logical AND.
-		color.Yellow("VERDICT: guest access is available (some endpoints also accept/require credentials).")
-	case anyAnonymous:
-		color.Red("VERDICT: GUEST ACCESS — server advertises Anonymous authentication.")
-	case anyCredential:
-		color.Green("VERDICT: CREDENTIALS REQUIRED — no anonymous endpoint advertised.")
-	default:
-		// default runs if no case matched (like "else").
-		fmt.Println("VERDICT: no user identity tokens advertised (unusual — check manually).")
-	}
-
-	// Turn the "seen" set (a map) into a sorted slice for tidy printing.
-	// make([]string, 0, len(seen)) creates an empty slice but pre-reserves
-	// capacity for len(seen) items — a small efficiency, not required.
-	methods := make([]string, 0, len(seen))
-
-	// Ranging over a map yields key, value. We only want the keys (the method
-	// names), so we ignore the value with "_".
-	for m := range seen {
-		methods = append(methods, m)
-	}
-	// Sort the slice in place, alphabetically.
-	sort.Strings(methods)
-	fmt.Printf("Auth methods across all endpoints: %v\n", methods)
-
-	// *probe dereferences the bool pointer from the flag. If -probe was passed,
-	// run the active confirmation step.
-	if *probe {
-		// Call our probe helper, passing the context and the endpoint value.
-		runAnonymousProbe(ctx, *endpoint)
-	}
 }
 
-// ---------------------------------------------------------------------------
-// Helper functions live outside main(). Go doesn't care about definition order
-// within a package — main() above can call these even though they're below it.
-// ---------------------------------------------------------------------------
-
-// runAnonymousProbe actively opens an anonymous session to confirm whether
-// guest access truly works (advertising it and honouring it can differ).
-//
-// The parameter list "(ctx context.Context, endpoint string)" names each
-// argument and its type. This function returns nothing.
 func runAnonymousProbe(ctx context.Context, endpoint string) {
-	fmt.Println("\n--- active anonymous probe ---")
-
-	// opcua.NewClient builds a client configured for anonymous auth.
-	// opcua.AuthAnonymous() is an "option" — gopcua uses the functional-options
-	// pattern where you pass configuration as function calls. Returns (client, error).
 	c, err := opcua.NewClient(endpoint, opcua.AuthAnonymous())
 	if err != nil {
-		fmt.Printf("could not build client: %v\n", err)
-		return // exit this function early (main continues)
-	}
-
-	// Connect performs the full handshake AND opens+activates a session.
-	// If anonymous access is genuinely allowed, this returns nil.
-	// If the server rejects the anonymous identity, err is non-nil.
-	if err := c.Connect(ctx); err != nil {
-		// Note: you can declare a variable *inside* the if (err := ...);
-		// it's then scoped to just this if/else. Common Go idiom.
-		color.Green("RESULT: anonymous login REJECTED (%v)\n", err)
+		fmt.Printf("[-] could not build client: %v\n", err)
 		return
 	}
 
-	// If we reach here, the session opened. defer the disconnect so it always
-	// runs when this function returns, keeping the session from lingering.
+	if err := c.Connect(ctx); err != nil {
+		color.Red("[-] anonymous login REJECTED (%v)\n", err)
+		return
+	}
+
 	defer c.Close(ctx)
 
-	color.Red("RESULT: anonymous login SUCCEEDED — guest access genuinely works.")
+	color.Green("[+] anonymous login SUCCEEDED")
 }
 
-// tokenTypeName maps the numeric UserTokenType enum to a human label.
-// It takes a ua.UserTokenType and returns a string (the "string" after the
-// parameters is the return type).
+func runCredentialProbe(ctx context.Context, endpoint *ua.EndpointDescription, user, pass string) {
+
+	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+	fmt.Printf("[*] Attempting login with %s:%s\n", user, pass)
+
+	// sec_policy := shortPolicy(endpoint.SecurityPolicyURI)
+	// security_mode := endpoint.SecurityMode.String()
+
+	opts := []opcua.Option{
+		// opcua.SecurityPolicy(sec_policy),
+		// opcua.SecurityModeString(security_mode),
+		opcua.AuthUsername(user, pass),
+		opcua.SecurityFromEndpoint(endpoint, ua.UserTokenTypeUserName),
+		opcua.ApplicationURI("urn:cdino:opcua-recon"),
+	}
+
+	if endpoint.SecurityMode != ua.MessageSecurityModeNone {
+		generateCertificate()
+		opts = append(opts,
+			opcua.CertificateFile("client_cert.pem"),
+			opcua.PrivateKeyFile("client_key.pem"),
+		)
+	}
+	c, err := opcua.NewClient(endpoint.EndpointURL, opts...)
+	if err != nil {
+		fmt.Printf("[-] could not build client: %v\n", err)
+		return
+	}
+
+	if err := c.Connect(ctx); err != nil {
+		color.Red("[-] credential login REJECTED (%v)\n", err)
+		return
+	}
+
+	defer c.Close(ctx)
+
+	color.Green("[+] credential login SUCCEEDED")
+}
+
+func runWriteableProbe(ctx context.Context, endpoint *ua.EndpointDescription, user string, pass string, isAnon bool) {
+	ctx, cancel := context.WithTimeout(ctx, 60*time.Second)
+	defer cancel()
+	var c *opcua.Client
+	var err error
+	if isAnon { //anon auth
+		fmt.Printf("[*] Attempting to find writeable tags with Anonymous credentials\n")
+
+		c, err = opcua.NewClient(endpoint.EndpointURL, opcua.AuthAnonymous())
+		if err != nil {
+			fmt.Printf("[-] could not build client: %v\n", err)
+			return
+		}
+		if err := c.Connect(ctx); err != nil {
+			color.Red("[-] credential login REJECTED (%v)\n", err)
+			return
+		}
+	} else { //cred auth
+		fmt.Printf("[*] Attempting to find writeable tags with %s:%s\n", user, pass)
+
+		opts := []opcua.Option{
+			opcua.AuthUsername(user, pass),
+			opcua.SecurityFromEndpoint(endpoint, ua.UserTokenTypeUserName),
+		}
+
+		if endpoint.SecurityMode != ua.MessageSecurityModeNone {
+			generateCertificate()
+			opts = append(opts,
+				opcua.CertificateFile("client_cert.pem"),
+				opcua.PrivateKeyFile("client_key.pem"),
+				opcua.ApplicationURI("urn:cdino:opcua-recon"),
+			)
+		}
+		c, err = opcua.NewClient(endpoint.EndpointURL, opts...)
+		if err != nil {
+			fmt.Printf("[-] could not build client: %v\n", err)
+			return
+		}
+		if err := c.Connect(ctx); err != nil {
+			color.Red("[-] credential login REJECTED (%v)\n", err)
+			return
+		}
+	}
+
+	defer c.Close(ctx)
+
+	var nodeID string = "i=85" //TODO: make this programatic or user supplied (or both!)
+	id, err := ua.ParseNodeID(nodeID)
+	if err != nil {
+		fmt.Printf("invalid node id: %s", err)
+		return
+	}
+	visited := make(map[string]bool)
+	var tags []tag
+	err = browseTags(ctx, c.Node(id), 0, "", &tags, visited)
+	fmt.Printf(prettyPrint(tags))
+
+}
+
+func browseTags(ctx context.Context, n *opcua.Node, level int, path string, tags *[]tag, visited map[string]bool) (err error) {
+
+	if level > maxDepth || ctx.Err() != nil {
+		return nil
+	}
+
+	key := n.ID.String()
+	if visited[key] {
+		return nil
+	}
+	visited[key] = true
+	if key == "i=2253" { // skip server meta data tags
+		return nil
+	}
+
+	attrs, err := n.Attributes(ctx,
+		ua.AttributeIDNodeClass,       //0
+		ua.AttributeIDUserAccessLevel, //1
+		ua.AttributeIDBrowseName,      //2
+		ua.AttributeIDDescription,     //3
+		ua.AttributeIDDataType,        //4
+
+	)
+
+	if err != nil {
+		fmt.Printf("Attr read error: %v\n", err)
+		return nil // bail out of THIS node, don't index into an empty slice
+
+	}
+
+	node_class := ua.NodeClass(attrs[0].Value.Int())
+	browse_name := attrs[2]
+	description := attrs[3]
+	path = path + "." + browse_name.Value.String()
+
+	if node_class == ua.NodeClassVariable {
+		value, _ := n.Value(ctx)
+		//fmt.Printf("Value: %v\n", value)
+		access_level := ua.AccessLevelType(attrs[1].Value.Uint())
+		//fmt.Printf("Access Level: %s\n", access_level)
+		writable := access_level&ua.AccessLevelTypeCurrentWrite != 0
+		if writable {
+			tag := tag{
+				NodeID:      n.ID,
+				BrowseName:  browse_name.Value.String(),
+				Description: description.Value.String(),
+				Path:        path,
+				Value:       value.Value(),
+				Writable:    writable,
+			}
+			*tags = append(*tags, tag)
+		}
+
+	}
+
+	//fmt.Printf("Node ID: %s\n", n.ID)
+	//fmt.Printf("Browser Name: %s\n", browse_name.Value)
+	//fmt.Printf("Description Name: %s\n\n", description.Value)
+
+	nodes, err := n.ReferencedNodes(ctx, id.HierarchicalReferences, ua.BrowseDirectionForward, ua.NodeClassAll, true)
+
+	if err != nil {
+		fmt.Printf("Couldn't get referenced nodes: %v", err)
+		return nil
+	}
+	for _, node := range nodes {
+		browseTags(ctx, node, level+1, path, tags, visited)
+		if err != nil {
+			continue
+		}
+	}
+
+	return nil
+}
+
+// Returns the auth options plus the token type to select on the endpoint.
+func authOptions(user, pass string) ([]opcua.Option, ua.UserTokenType) {
+	if user == "" {
+		return []opcua.Option{opcua.AuthAnonymous()}, ua.UserTokenTypeAnonymous
+	}
+	return []opcua.Option{opcua.AuthUsername(user, pass)}, ua.UserTokenTypeUserName
+}
+
+func generateCertificate() {
+	appURI, _ := url.Parse("urn:cdino:opcua-recon")
+
+	priv, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		panic(err)
+	}
+
+	template := x509.Certificate{
+		SerialNumber: big.NewInt(time.Now().UnixNano()),
+		Subject: pkix.Name{
+			CommonName:   "opcua-recon-client",
+			Organization: []string{"cdino"},
+		},
+		NotBefore:             time.Now().Add(-time.Hour),
+		NotAfter:              time.Now().AddDate(1, 0, 0), // valid 1 year
+		KeyUsage:              x509.KeyUsageDigitalSignature | x509.KeyUsageKeyEncipherment | x509.KeyUsageCertSign,
+		ExtKeyUsage:           []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth, x509.ExtKeyUsageServerAuth},
+		BasicConstraintsValid: true,
+		IsCA:                  true,
+		URIs:                  []*url.URL{appURI},
+	}
+
+	der, err := x509.CreateCertificate(rand.Reader, &template, &template, &priv.PublicKey, priv)
+	if err != nil {
+		panic(err)
+	}
+	certOut, _ := os.Create("client_cert.pem")
+	pem.Encode(certOut, &pem.Block{Type: "CERTIFICATE", Bytes: der})
+	certOut.Close()
+
+	keyBytes := x509.MarshalPKCS1PrivateKey(priv)
+	keyOut, _ := os.Create("client_key.pem")
+	pem.Encode(keyOut, &pem.Block{Type: "RSA PRIVATE KEY", Bytes: keyBytes})
+	keyOut.Close()
+
+}
+
 func tokenTypeName(t ua.UserTokenType) string {
 	switch t {
 	case ua.UserTokenTypeAnonymous:
@@ -306,8 +477,6 @@ func tokenTypeName(t ua.UserTokenType) string {
 	}
 }
 
-// shortPolicy trims a long SecurityPolicy URI down to the part after the '#'.
-// e.g. "http://opcfoundation.org/UA/SecurityPolicy#None" -> "None".
 func shortPolicy(uri string) string {
 	// Walk backwards from the end of the string looking for '#'.
 	// len(uri)-1 is the last index; i-- decrements each iteration.
@@ -325,4 +494,9 @@ func shortPolicy(uri string) string {
 		return "(none)"
 	}
 	return uri
+}
+
+func prettyPrint(i interface{}) string {
+	s, _ := json.MarshalIndent(i, "", "\t")
+	return string(s)
 }
