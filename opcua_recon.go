@@ -398,7 +398,7 @@ func browseTags(ctx context.Context, n *opcua.Node, level int, path string, tags
 		//fmt.Printf("Access Level: %s\n", access_level)
 		writable := access_level&ua.AccessLevelTypeCurrentWrite != 0
 		if writable {
-			//color.Green("[+] Found writeable tag: " + n.ID.String())
+			color.Green("[+] Found writeable tag: " + n.ID.String())
 			tag := tag{
 				NodeID:      n.ID,
 				BrowseName:  browse_name.Value.String(),
