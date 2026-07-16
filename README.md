@@ -57,9 +57,7 @@ One target per line; port optional, otherwise defaults to `-port`:
 
 ## Build
 ```bash
-git clone https://github.com/chrisdinozzi/opcua-recon.git
-cd opcua-recon
-go install
+go install github.com/chrisdinozzi/opcua-recon@latest
 ```
 
 Then run examples below with `./opcua_recon` instead of `go run opcua_recon.go`.
