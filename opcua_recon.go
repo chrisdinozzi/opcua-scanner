@@ -33,12 +33,17 @@ const maxDepth = 10
 
 const banner = `
                                                                                 
-  ####  #####   ####        #    #   ##      #####  ######  ####   ####  #    # 
- #    # #    # #    #       #    #  #  #     #    # #      #    # #    # ##   # 
- #    # #    # #      ##### #    # #    #    #    # #####  #      #    # # #  # 
- #    # #####  #            #    # ######    #####  #      #      #    # #  # # 
- #    # #      #    #       #    # #    #    #   #  #      #    # #    # #   ## 
-  ####  #       ####         ####  #    #    #    # ######  ####   ####  #    # 
+                                                                                                               
+                                                                                                               
+  ██████  ████████   ██████             █████ ████  ██████      ████████   ██████   ██████   ██████  ████████  
+ ███░░███░░███░░███ ███░░███ ██████████░░███ ░███  ░░░░░███    ░░███░░███ ███░░███ ███░░███ ███░░███░░███░░███ 
+░███ ░███ ░███ ░███░███ ░░░ ░░░░░░░░░░  ░███ ░███   ███████     ░███ ░░░ ░███████ ░███ ░░░ ░███ ░███ ░███ ░███ 
+░███ ░███ ░███ ░███░███  ███            ░███ ░███  ███░░███     ░███     ░███░░░  ░███  ███░███ ░███ ░███ ░███ 
+░░██████  ░███████ ░░██████             ░░████████░░████████    █████    ░░██████ ░░██████ ░░██████  ████ █████
+ ░░░░░░   ░███░░░   ░░░░░░               ░░░░░░░░  ░░░░░░░░    ░░░░░      ░░░░░░   ░░░░░░   ░░░░░░  ░░░░ ░░░░░ 
+          ░███                                                                                                 
+          █████                                                                                                
+         ░░░░░                                                                                                 
 
 by cdino
 `
@@ -63,10 +68,12 @@ func main() {
 	outputFile := flag.String("output-file", "", "a .csv output of writeable tags.")
 
 	flag.Parse()
+
 	if len(os.Args) == 1 {
 		flag.Usage()
 		os.Exit(0)
 	}
+
 	verboseOutput("Flag Values:\n\tEndpoint: %s\n\tIP: %s\n\tIP File:%s\n\tPort: %d\n\tProbe Anon:%t\n\tProbe Creds:%t\n\tUsername: %s\n\tPassword: %s\n\tProbe Write: %t\n\tBatch Size: %d\nOutput File: %s\n", *endpoint, *ip, *ipFile, *port, *probeAnon, *probeCreds, *user, *pass, *probeWrite, *batchSize, *outputFile)
 
 	var massScan = false
