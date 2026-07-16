@@ -20,25 +20,10 @@ import (
 
 var verbose bool
 
-type endpointDetails struct {
-	ref            int
-	url            string
-	securityMode   string
-	securityPolicy string
-	securityLevel  int
-	offersAnon     bool
-	offersCreds    bool
-	methods        []string
-}
-
 type tag struct {
 	NodeID      *ua.NodeID
-	NodeClass   ua.NodeClass
 	BrowseName  string
-	Description string
 	AccessLevel ua.AccessLevelType
-	Path        string
-	DataType    string
 	Writable    bool
 	Value       interface{}
 }
@@ -74,7 +59,7 @@ func main() {
 
 	flag.BoolVar(&verbose, "verbose", false, "enable verbose output")
 	flag.Parse()
-	verboseOutput("Flag Values:\n\tEndpoint: %s\n\tIP: %s\n\tIP File:%s\n\tPort: %d\n\tProbe Anon:%t\n\tProbe Creds:%t\n\tUsername: %s\n\tPassword: %s\n\tProbe Write: %t\n\tBatch Size: %d\n\n", *endpoint, *ip, *ipFile, *port, *probeAnon, *probeCreds, *user, *pass, *probeWrite, *batchSize)
+	verboseOutput("Flag Values:\n\tEndpoint: %s\n\tIP: %s\n\tIP File:%s\n\tPort: %d\n\tProbe Anon:%t\n\tProbe Creds:%t\n\tUsername: %s\n\tPassword: %s\n\tProbe Write: %t\n\tBatch Size: %d\n", *endpoint, *ip, *ipFile, *port, *probeAnon, *probeCreds, *user, *pass, *probeWrite, *batchSize)
 
 	var massScan = false
 	if *ipFile != "" {
@@ -93,11 +78,11 @@ func main() {
 		fmt.Println("Targets: ", targets)
 		for i, endpoint := range targets {
 			fmt.Println(i + 1)
-			scanServer(ctx, &endpoint, user, pass, probeAnon, probeCreds, probeWrite, rewriteHost, *batchSize)
+			scanServer(ctx, &endpoint, user, pass, *probeAnon, *probeCreds, *probeWrite, *rewriteHost, *batchSize)
 		}
 	} else {
 		fmt.Println("Target: ", *endpoint)
-		scanServer(ctx, endpoint, user, pass, probeAnon, probeCreds, probeWrite, rewriteHost, *batchSize)
+		scanServer(ctx, endpoint, user, pass, *probeAnon, *probeCreds, *probeWrite, *rewriteHost, *batchSize)
 	}
 }
 
@@ -106,7 +91,7 @@ func parseIPFile(fileName string, port int) []string {
 	targetsFile, err := os.Open(fileName)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "File Read Failed: %v\n", err)
-		os.Exit(1)
+		os.Exit(66)
 	}
 	defer targetsFile.Close()
 
@@ -125,7 +110,7 @@ func parseIPFile(fileName string, port int) []string {
 	return targets
 }
 
-func scanServer(ctx context.Context, endpoint, user, pass *string, probeAnon, probeCreds, probeWrite, rewriteHost *bool, batchSize int) {
+func scanServer(ctx context.Context, endpoint, user, pass *string, probeAnon, probeCreds, probeWrite, rewriteHost bool, batchSize int) {
 	endpoints, err := opcua.GetEndpoints(ctx, *endpoint)
 
 	if err != nil {
@@ -135,20 +120,24 @@ func scanServer(ctx context.Context, endpoint, user, pass *string, probeAnon, pr
 
 	fmt.Printf("=== %s ===\n%d endpoint(s)\n\n", *endpoint, len(endpoints))
 
-	scannedEndpoints := []endpointDetails{}
+	var dialledHost string
+	if rewriteHost {
+		dialledURL, err := url.Parse(*endpoint)
+		if err != nil {
+			fmt.Println("[-] Error parsing endpoint URL.")
+			os.Exit(1)
+		}
+		dialledHost = dialledURL.Hostname()
+	}
 
 	for i, ep := range endpoints {
 		anyAnonymous := false
 		anyCredential := false
-		if *rewriteHost {
-			dialledURL, err := url.Parse(*endpoint)
-			if err != nil {
-				fmt.Println("Error parsing endpoint URL.")
-				os.Exit(1)
-			}
-			dialledHost := dialledURL.Hostname()
-			rewriteEndpointHost(ep, dialledHost)
+
+		if rewriteHost {
+			rewriteEndpointHost(ep, dialledHost) // just reuse the already-computed value
 		}
+
 		var methods []string
 
 		for _, tok := range ep.UserIdentityTokens {
@@ -171,24 +160,14 @@ func scanServer(ctx context.Context, endpoint, user, pass *string, probeAnon, pr
 			methods = []string{"(none advertised)"}
 		}
 
-		scannedEndpoints = append(scannedEndpoints, endpointDetails{
-			ref:            i,
-			url:            ep.EndpointURL,
-			securityMode:   ep.SecurityMode.String(),
-			securityPolicy: ep.SecurityPolicyURI,
-			securityLevel:  int(ep.SecurityLevel),
-			offersAnon:     anyAnonymous,
-			offersCreds:    anyCredential,
-			methods:        methods})
-
-		fmt.Printf("[Endpoint %d]\n", scannedEndpoints[i].ref+1)
-		fmt.Printf("  URL:             %s\n", scannedEndpoints[i].url)
-		fmt.Printf("  Security mode:   %s\n", scannedEndpoints[i].securityMode)
-		fmt.Printf("  Security policy: %s\n", scannedEndpoints[i].securityPolicy)
-		fmt.Printf("  Security level:  %d\n", scannedEndpoints[i].securityLevel)
-		fmt.Printf("  Allows Anonymous Login:  %t\n", scannedEndpoints[i].offersAnon)
-		fmt.Printf("  Allows Credential Login:  %t\n", scannedEndpoints[i].offersCreds)
-		fmt.Printf("  Supported Login Methods:  %v\n", scannedEndpoints[i].methods)
+		fmt.Printf("[Endpoint %d]\n", i+1)
+		fmt.Printf("  URL:             %s\n", ep.EndpointURL)
+		fmt.Printf("  Security mode:   %s\n", ep.SecurityMode.String())
+		fmt.Printf("  Security policy: %s\n", ep.SecurityPolicyURI)
+		fmt.Printf("  Security level:  %d\n", int(ep.SecurityLevel))
+		fmt.Printf("  Allows Anonymous Login:  %t\n", anyAnonymous)
+		fmt.Printf("  Allows Credential Login:  %t\n", anyCredential)
+		fmt.Printf("  Supported Login Methods:  %v\n", methods)
 		fmt.Println("***")
 		switch {
 		case anyAnonymous && anyCredential:
@@ -207,19 +186,19 @@ func scanServer(ctx context.Context, endpoint, user, pass *string, probeAnon, pr
 			continue
 		}
 
-		if *probeAnon && anyAnonymous {
+		if probeAnon && anyAnonymous {
 			color.Green("[*] Checking if Anonymous access works...")
 			runAnonymousProbe(ctx, ep, *endpoint)
 		}
 
-		if *probeCreds && anyCredential {
+		if probeCreds && anyCredential {
 			color.Green("[*] Checking if Credential access works...")
 			runCredentialProbe(ctx, ep, *user, *pass)
 		}
-		if *probeWrite && (anyAnonymous || anyCredential) {
+		if probeWrite && (anyAnonymous || anyCredential) {
 			runWriteableProbe(ctx, ep, *user, *pass, anyAnonymous, batchSize)
 		}
-		os.Exit(0)
+		//os.Exit(0)
 	}
 	fmt.Println("---")
 
@@ -262,12 +241,7 @@ func runCredentialProbe(ctx context.Context, endpoint *ua.EndpointDescription, u
 	defer cancel()
 	fmt.Printf("[*] Attempting login with %s:%s\n", user, pass)
 
-	// secPolicy := shortPolicy(endpoint.SecurityPolicyURI)
-	// securityMode := endpoint.SecurityMode.String()
-
 	opts := []opcua.Option{
-		// opcua.SecurityPolicy(secPolicy),
-		// opcua.SecurityModeString(securityMode),
 		opcua.AuthUsername(user, pass),
 		opcua.SecurityFromEndpoint(endpoint, ua.UserTokenTypeUserName),
 		opcua.ApplicationURI("urn:cdino:opcua-recon"),
@@ -290,7 +264,7 @@ func runCredentialProbe(ctx context.Context, endpoint *ua.EndpointDescription, u
 }
 
 func runWriteableProbe(ctx context.Context, endpoint *ua.EndpointDescription, user, pass string, isAnon bool, batchSize int) {
-	ctx, cancel := context.WithTimeout(ctx, 30000*time.Second)
+	ctx, cancel := context.WithTimeout(ctx, 300*time.Second)
 	defer cancel()
 	var c *opcua.Client
 	var err error
@@ -303,7 +277,7 @@ func runWriteableProbe(ctx context.Context, endpoint *ua.EndpointDescription, us
 			return
 		}
 		if err := c.Connect(ctx); err != nil {
-			color.Red("[-] credential login REJECTED (%v)\n", err)
+			color.Red("[-] anonymous login REJECTED (%v)\n", err)
 			return
 		}
 		//TODO review this flow
@@ -328,8 +302,8 @@ func runWriteableProbe(ctx context.Context, endpoint *ua.EndpointDescription, us
 
 	defer c.Close(ctx)
 
-	var nodeID string = "i=85" //TODO: make this programatic or user supplied (or both!)
-	startNodeId, err := ua.ParseNodeID(nodeID)
+	var nodeID string = "i=85"
+	startNodeID, err := ua.ParseNodeID(nodeID)
 	if err != nil {
 		fmt.Printf("invalid node id: %s", err)
 		return
@@ -339,35 +313,38 @@ func runWriteableProbe(ctx context.Context, endpoint *ua.EndpointDescription, us
 	var tags []tag
 	start := time.Now()
 
-	walkAndReport(ctx, c, c.Node(startNodeId), 0, visited, &pending, &tags, batchSize)
+	walkAndReport(ctx, c, c.Node(startNodeID), 0, visited, &pending, &tags, batchSize)
 	flushBatch(ctx, c, &pending, &tags) // flush whatever's left under batchSize at the end
 
 	color.Green("[+] %d writeable tags found", len(tags))
-	verboseOutput("scan took %s, visited %d nodes\n", time.Since(start), len(visited))
+	verboseOutput("scan took %s, visited %d nodes", time.Since(start), len(visited))
 
-	//verboseOutput(prettyPrint(tags))
+	verboseOutput(prettyPrint(tags))
 
 }
 
 const attrsPerNode = 4 // NodeClass, UserAccessLevel, BrowseName, Value — order matters
 func readNodeChunk(ctx context.Context, c *opcua.Client, ids []*ua.NodeID) ([]tag, error) {
 	attsToRead := make([]*ua.ReadValueID, 0, len(ids)*attrsPerNode)
-	for _, nodeId := range ids {
+	for _, nodeID := range ids {
 		attsToRead = append(attsToRead,
-			&ua.ReadValueID{NodeID: nodeId, AttributeID: ua.AttributeIDNodeClass},
-			&ua.ReadValueID{NodeID: nodeId, AttributeID: ua.AttributeIDUserAccessLevel},
-			&ua.ReadValueID{NodeID: nodeId, AttributeID: ua.AttributeIDBrowseName},
-			&ua.ReadValueID{NodeID: nodeId, AttributeID: ua.AttributeIDValue},
+			&ua.ReadValueID{NodeID: nodeID, AttributeID: ua.AttributeIDNodeClass},
+			&ua.ReadValueID{NodeID: nodeID, AttributeID: ua.AttributeIDUserAccessLevel},
+			&ua.ReadValueID{NodeID: nodeID, AttributeID: ua.AttributeIDBrowseName},
+			&ua.ReadValueID{NodeID: nodeID, AttributeID: ua.AttributeIDValue},
 		)
 	}
 	resp, err := c.Read(ctx, &ua.ReadRequest{NodesToRead: attsToRead})
 	if err != nil {
 		return nil, err
 	}
-	verboseOutput("requested %d, got %d results\n", len(attsToRead), len(resp.Results))
+	verboseOutput("requested %d, got %d results", len(attsToRead), len(resp.Results))
+	if len(resp.Results) < len(ids)*attrsPerNode {
+		return nil, fmt.Errorf("server returned %d results, expected %d", len(resp.Results), len(ids)*attrsPerNode)
+	}
 	var writeable []tag
-	for i, nodeId := range ids {
-		verboseOutput("Reading: " + nodeId.String())
+	for i, nodeID := range ids {
+		//verboseOutput("Reading: %s", nodeID.String())
 		base := i * attrsPerNode // results[base .. base+attrsPerNode) belong to ids[i]
 		nodeClass := resp.Results[base+0]
 		accessLevel := resp.Results[base+1]
@@ -386,7 +363,7 @@ func readNodeChunk(ctx context.Context, c *opcua.Client, ids []*ua.NodeID) ([]ta
 		}
 
 		tag := tag{
-			NodeID:      nodeId,
+			NodeID:      nodeID,
 			AccessLevel: access,
 			Writable:    true,
 		}
@@ -409,16 +386,17 @@ func walkAndReport(ctx context.Context, c *opcua.Client, n *opcua.Node, level in
 		return
 	}
 	if ctx.Err() != nil {
-		color.Red("[-]Context error:%s", ctx.Err())
+		color.Red("[-] Context error:%s", ctx.Err())
+		return
 	}
 	key := n.ID.String()
 	if visited[key] {
-		verboseOutput("[-] Node (%s) already visited, skipping", key)
+		verboseOutput("[*] Node (%s) already visited, skipping", key)
 		return
 	}
 	visited[key] = true
 	if key == "i=2253" { // skip server diagnostics subtree
-		verboseOutput("[-] Node (%s) part of server diagnostics, skipping", key)
+		verboseOutput("[*] Node (%s) part of server diagnostics, skipping", key)
 		return
 	}
 	*pending = append(*pending, n.ID)
@@ -427,7 +405,7 @@ func walkAndReport(ctx context.Context, c *opcua.Client, n *opcua.Node, level in
 	}
 	nodes, err := n.ReferencedNodes(ctx, id.HierarchicalReferences, ua.BrowseDirectionForward, ua.NodeClassAll, true)
 	if err != nil {
-		verboseOutput("browse failed at %s: %v\n", key, err)
+		color.Red("browse failed at %s: %v", key, err)
 		return
 	}
 	for _, child := range nodes {
@@ -441,7 +419,7 @@ func flushBatch(ctx context.Context, c *opcua.Client, pending *[]*ua.NodeID, fou
 	}
 	results, err := readNodeChunk(ctx, c, *pending)
 	if err != nil {
-		verboseOutput("batch read failed (%d nodes): %v\n", len(*pending), err)
+		verboseOutput("batch read failed (%d nodes): %v", len(*pending), err)
 		*pending = nil
 		return
 	}
@@ -463,29 +441,8 @@ func tokenTypeName(t ua.UserTokenType) string {
 	case ua.UserTokenTypeIssuedToken:
 		return "Issued Token"
 	default:
-		// Sprintf builds a string instead of printing it. %d formats the
-		// numeric enum value so unknown types still show something useful.
 		return fmt.Sprintf("Unknown(%d)", t)
 	}
-}
-
-func shortPolicy(uri string) string {
-	// Walk backwards from the end of the string looking for '#'.
-	// len(uri)-1 is the last index; i-- decrements each iteration.
-	for i := len(uri) - 1; i >= 0; i-- {
-		// Strings are indexed as bytes; a single-quote literal like '#' is a
-		// byte (rune) constant. If this byte is '#', return everything after it.
-		if uri[i] == '#' {
-			// uri[i+1:] is a "slice expression": from index i+1 to the end.
-			return uri[i+1:]
-		}
-	}
-	// If we never found a '#': empty string gets a placeholder, otherwise
-	// return the URI unchanged.
-	if uri == "" {
-		return "(none)"
-	}
-	return uri
 }
 
 func prettyPrint(i interface{}) string {
