@@ -1,4 +1,4 @@
-module github.com/chrisdinozzi/opcua-scanner
+module github.com/chrisdinozzi/opcua-recon
 
 go 1.26.5
 
