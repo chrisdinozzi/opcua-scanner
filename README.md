@@ -22,8 +22,6 @@ actually works, and scan for tags that are writeable by the authenticated sessio
 - Write-tag scanning currently only runs against `SecurityMode: None` endpoints
 - Credential probing does not yet support client-certificate authentication (see TODO)
 
-
-
 ## Usage
 
 | Flag | Description |
