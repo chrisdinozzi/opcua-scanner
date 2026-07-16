@@ -4,9 +4,9 @@ Features:
 - Check if Anonymous access works
 - Check if Credentials work
 - Scan for writeable tags
+- Output writeable tags to CSV
 
 ## TODO
-- Add file output support
 - Add certificate authentication support
 
 ## Usage

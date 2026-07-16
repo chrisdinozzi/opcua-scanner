@@ -3,6 +3,7 @@ package main
 import (
 	"bufio"
 	"context"
+	"encoding/csv"
 	"encoding/json"
 	"flag"
 	"fmt"
@@ -58,8 +59,11 @@ func main() {
 	rewriteHost := flag.Bool("rewrite-host", false, "Rewrite the endpoint host with the provided host. required for scanning servers behind NAT/Firewalls")
 
 	flag.BoolVar(&verbose, "verbose", false, "enable verbose output")
+
+	outputFile := flag.String("output-file", "", "a .csv output of writeable tags.")
+
 	flag.Parse()
-	verboseOutput("Flag Values:\n\tEndpoint: %s\n\tIP: %s\n\tIP File:%s\n\tPort: %d\n\tProbe Anon:%t\n\tProbe Creds:%t\n\tUsername: %s\n\tPassword: %s\n\tProbe Write: %t\n\tBatch Size: %d\n", *endpoint, *ip, *ipFile, *port, *probeAnon, *probeCreds, *user, *pass, *probeWrite, *batchSize)
+	verboseOutput("Flag Values:\n\tEndpoint: %s\n\tIP: %s\n\tIP File:%s\n\tPort: %d\n\tProbe Anon:%t\n\tProbe Creds:%t\n\tUsername: %s\n\tPassword: %s\n\tProbe Write: %t\n\tBatch Size: %d\nOutput File: %s\n", *endpoint, *ip, *ipFile, *port, *probeAnon, *probeCreds, *user, *pass, *probeWrite, *batchSize, *outputFile)
 
 	var massScan = false
 	if *ipFile != "" {
@@ -75,14 +79,17 @@ func main() {
 
 	if massScan == true {
 		targets := parseIPFile(*ipFile, *port)
+		if targets == nil {
+			return
+		}
 		fmt.Println("Targets: ", targets)
 		for i, endpoint := range targets {
 			fmt.Println(i + 1)
-			scanServer(ctx, &endpoint, user, pass, *probeAnon, *probeCreds, *probeWrite, *rewriteHost, *batchSize)
+			scanServer(ctx, &endpoint, user, pass, outputFile, *probeAnon, *probeCreds, *probeWrite, *rewriteHost, *batchSize)
 		}
 	} else {
 		fmt.Println("Target: ", *endpoint)
-		scanServer(ctx, endpoint, user, pass, *probeAnon, *probeCreds, *probeWrite, *rewriteHost, *batchSize)
+		scanServer(ctx, endpoint, user, pass, outputFile, *probeAnon, *probeCreds, *probeWrite, *rewriteHost, *batchSize)
 	}
 }
 
@@ -91,7 +98,7 @@ func parseIPFile(fileName string, port int) []string {
 	targetsFile, err := os.Open(fileName)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "File Read Failed: %v\n", err)
-		os.Exit(66)
+		return nil
 	}
 	defer targetsFile.Close()
 
@@ -110,12 +117,12 @@ func parseIPFile(fileName string, port int) []string {
 	return targets
 }
 
-func scanServer(ctx context.Context, endpoint, user, pass *string, probeAnon, probeCreds, probeWrite, rewriteHost bool, batchSize int) {
+func scanServer(ctx context.Context, endpoint, user, pass, outputFile *string, probeAnon, probeCreds, probeWrite, rewriteHost bool, batchSize int) {
 	endpoints, err := opcua.GetEndpoints(ctx, *endpoint)
 
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "GetEndpoints failed: %v\n", err)
-		os.Exit(1)
+		return
 	}
 
 	fmt.Printf("=== %s ===\n%d endpoint(s)\n\n", *endpoint, len(endpoints))
@@ -125,7 +132,7 @@ func scanServer(ctx context.Context, endpoint, user, pass *string, probeAnon, pr
 		dialledURL, err := url.Parse(*endpoint)
 		if err != nil {
 			fmt.Println("[-] Error parsing endpoint URL.")
-			os.Exit(1)
+			return
 		}
 		dialledHost = dialledURL.Hostname()
 	}
@@ -196,9 +203,8 @@ func scanServer(ctx context.Context, endpoint, user, pass *string, probeAnon, pr
 			runCredentialProbe(ctx, ep, *user, *pass)
 		}
 		if probeWrite && (anyAnonymous || anyCredential) {
-			runWriteableProbe(ctx, ep, *user, *pass, anyAnonymous, batchSize)
+			runWriteableProbe(ctx, ep, *user, *pass, anyAnonymous, batchSize, *outputFile)
 		}
-		//os.Exit(0)
 	}
 	fmt.Println("---")
 
@@ -263,7 +269,7 @@ func runCredentialProbe(ctx context.Context, endpoint *ua.EndpointDescription, u
 	color.Green("[+] credential login SUCCEEDED")
 }
 
-func runWriteableProbe(ctx context.Context, endpoint *ua.EndpointDescription, user, pass string, isAnon bool, batchSize int) {
+func runWriteableProbe(ctx context.Context, endpoint *ua.EndpointDescription, user, pass string, isAnon bool, batchSize int, outputFile string) {
 	ctx, cancel := context.WithTimeout(ctx, 300*time.Second)
 	defer cancel()
 	var c *opcua.Client
@@ -314,16 +320,20 @@ func runWriteableProbe(ctx context.Context, endpoint *ua.EndpointDescription, us
 	start := time.Now()
 
 	walkAndReport(ctx, c, c.Node(startNodeID), 0, visited, &pending, &tags, batchSize)
-	flushBatch(ctx, c, &pending, &tags) // flush whatever's left under batchSize at the end
+	flushBatch(ctx, c, &pending, &tags) // flush whatevers left under batchSize at the end
 
 	color.Green("[+] %d writeable tags found", len(tags))
 	verboseOutput("scan took %s, visited %d nodes", time.Since(start), len(visited))
 
+	if outputFile != "" {
+		appendCSV(outputFile, endpoint, isAnon, tags)
+	}
 	verboseOutput(prettyPrint(tags))
 
 }
 
-const attrsPerNode = 4 // NodeClass, UserAccessLevel, BrowseName, Value — order matters
+const attrsPerNode = 4
+
 func readNodeChunk(ctx context.Context, c *opcua.Client, ids []*ua.NodeID) ([]tag, error) {
 	attsToRead := make([]*ua.ReadValueID, 0, len(ids)*attrsPerNode)
 	for _, nodeID := range ids {
@@ -344,7 +354,6 @@ func readNodeChunk(ctx context.Context, c *opcua.Client, ids []*ua.NodeID) ([]ta
 	}
 	var writeable []tag
 	for i, nodeID := range ids {
-		//verboseOutput("Reading: %s", nodeID.String())
 		base := i * attrsPerNode // results[base .. base+attrsPerNode) belong to ids[i]
 		nodeClass := resp.Results[base+0]
 		accessLevel := resp.Results[base+1]
@@ -454,5 +463,46 @@ func verboseOutput(output string, args ...interface{}) {
 	if verbose {
 		fmt.Printf(output, args...)
 		fmt.Println()
+	}
+}
+
+func appendCSV(path string, endpoint *ua.EndpointDescription, isAnon bool, tags []tag) {
+	if len(tags) == 0 {
+		return
+	}
+
+	authMethod := "Username/Password"
+	if isAnon {
+		authMethod = "Anonymous"
+	}
+
+	// Open in append mode so multiple servers/endpoints all land in one file.
+	f, err := os.OpenFile(path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "could not open output file: %v\n", err)
+		return
+	}
+	defer f.Close()
+
+	// Write the header only if the file was empty before this open.
+	info, _ := f.Stat()
+	w := csv.NewWriter(f)
+	defer w.Flush()
+
+	if info.Size() == 0 {
+		w.Write([]string{"Endpoint", "SecurityMode", "SecurityPolicy", "AuthMethod", "NodeID", "BrowseName", "AccessLevel", "Value"})
+	}
+
+	for _, t := range tags {
+		w.Write([]string{
+			endpoint.EndpointURL,
+			endpoint.SecurityMode.String(),
+			endpoint.SecurityPolicyURI,
+			authMethod,
+			t.NodeID.String(),
+			t.BrowseName,
+			t.AccessLevel.String(),
+			fmt.Sprintf("%v", t.Value),
+		})
 	}
 }
