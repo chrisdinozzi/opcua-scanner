@@ -6,6 +6,8 @@ actually works, and scan for tags that are writeable by the authenticated sessio
 
 **Only use against systems you own or are explicitly authorised to test.**
 
+![demo](demo.gif)
+
 ## Features
 - Enumerate endpoint security settings (security mode, policy, advertised auth methods)
 - Confirm whether anonymous access works
