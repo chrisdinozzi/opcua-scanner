@@ -60,38 +60,36 @@ One target per line; port optional, otherwise defaults to `-port`:
 go install github.com/chrisdinozzi/opcua-recon@latest
 ```
 
-Then run examples below with `./opcua_recon` instead of `go run opcua_recon.go`.
-
 ## Examples
 
 Scan an OPC-UA Server by Endpoint
 
-`go run opcua_recon.go -endpoint "opc.tcp://10.0.0.10:4840"`
+`opcua-recon -endpoint "opc.tcp://10.0.0.10:4840"`
 
 Scan an OPC-UA Server by IP and non-standard port
 
-`go run opcua_recon.go -ip "10.0.0.10" -port 18889`
+`opcua-recon -ip "10.0.0.10" -port 18889`
 
 Scan an OPC-UA Server by IP and check if anonymous access works
 
-`go run opcua_recon.go -ip "10.0.0.10" -probe-anon`
+`opcua-recon -ip "10.0.0.10" -probe-anon`
 
 Scan an OPC-UA Server by Endpoint and check if credentials access works
 
-`go run opcua_recon.go -endpoint "opc.tcp://10.0.0.10:4840" -probe-creds -user "user" -pass "password"`
+`opcua-recon -endpoint "opc.tcp://10.0.0.10:4840" -probe-creds -user "user" -pass "password"`
 
 Scan an OPC-UA Server by Endpoint and check if anonymous access works, and look for anonymous writeable tags, output to file
 
-`go run opcua_recon.go -endpoint "opc.tcp://10.0.0.10:4840" -probe-anon -probe-write -output-file out.csv`
+`opcua-recon -endpoint "opc.tcp://10.0.0.10:4840" -probe-anon -probe-write -output-file out.csv`
 
 Scan an OPC-UA Server by Endpoint and check if credentials access works, and look for writeable tags for said credentials
 
-`go run opcua_recon.go -endpoint "opc.tcp://10.0.0.10:4840" -probe-creds -user "user" -pass "password" -probe-write`
+`opcua-recon -endpoint "opc.tcp://10.0.0.10:4840" -probe-creds -user "user" -pass "password" -probe-write`
 
 Scan an OPC-UA Server by Endpoint that is behind NAT/Firewall, or has a hostname different from the user provided
 
-`go run opcua_recon.go -endpoint "opc.tcp://123.45.67.89:4840" -rewrite-host`
+`opcua-recon -endpoint "opc.tcp://123.45.67.89:4840" -rewrite-host`
 
 Specify a scanning batch size for writeable tag scan. useful for slow servers (slower the server, lower the batch count)
 
-`go run opcua_recon.go -endpoint "opc.tcp://123.45.67.89:4840" -rewrite-host -probe-anon -probe-write -batch-size 10`
+`opcua-recon -endpoint "opc.tcp://123.45.67.89:4840" -rewrite-host -probe-anon -probe-write -batch-size 10`
