@@ -21,7 +21,6 @@ actually works, and scan for tags that are writeable by the authenticated sessio
 - `go mod tidy` to fetch `github.com/gopcua/opcua` and `github.com/fatih/color`
 
 ## Limitations
-- Write-tag scanning currently only runs against `SecurityMode: None` endpoints
 - Credential probing does not yet support client-certificate authentication (see TODO)
 
 ## Usage
