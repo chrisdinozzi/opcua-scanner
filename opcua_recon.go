@@ -51,6 +51,8 @@ const banner = `
           █████                                                                                                
          ░░░░░                                                                                                 
 
+v1.0.2
+
 by cdino
 `
 
