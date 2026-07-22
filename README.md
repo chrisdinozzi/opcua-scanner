@@ -23,6 +23,11 @@ actually works, and scan for tags that are writeable by the authenticated sessio
 ## Limitations
 - Credential probing does not yet support client-certificate authentication
 
+## TODO
+- Add a version flag
+- Add certificate authentication
+- Make -rewrite-host work automagically
+
 ## Usage
 
 | Flag | Description |
