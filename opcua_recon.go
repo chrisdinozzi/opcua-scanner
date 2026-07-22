@@ -51,14 +51,16 @@ const banner = `
           █████                                                                                                
          ░░░░░                                                                                                 
 
-v1.0.2
+v1.0.3
 
 by cdino
 `
 
 func main() {
 	fmt.Println(banner)
-	time.Sleep(500 * time.Millisecond)
+
+	time.Sleep(500 * time.Millisecond) //to admire the banner!
+
 	endpoint := flag.String("endpoint", "", "OPC-UA endpoint URL")
 	ip := flag.String("ip", "", "OPC-UA server IP")
 	ipFile := flag.String("ip-file", "", "New line deliminated file of IPs to scan")
@@ -73,6 +75,9 @@ func main() {
 	flag.BoolVar(&verbose, "verbose", false, "enable verbose output")
 	outputFile := flag.String("output-file", "", "a .csv output of writeable tags.")
 	cleanupCerts := flag.Bool("cleanup-certs", false, "delete generated client certificate/key files when the scan finishes")
+	selectMode := flag.String("security-mode", "", "only probe endpoints with this security mode (e.g. None, Sign, SignAndEncrypt)")
+	selectPolicy := flag.String("security-policy", "", "only probe endpoints with this security policy (e.g. Basic256Sha256)")
+
 	flag.Parse()
 
 	if len(os.Args) == 1 {
@@ -80,7 +85,22 @@ func main() {
 		os.Exit(0)
 	}
 
-	verboseOutput("Flag Values:\n\tEndpoint: %s\n\tIP: %s\n\tIP File:%s\n\tPort: %d\n\tProbe Anon:%t\n\tProbe Creds:%t\n\tUsername: %s\n\tPassword: %s\n\tProbe Write: %t\n\tBatch Size: %d\nOutput File: %s\n", *endpoint, *ip, *ipFile, *port, *probeAnon, *probeCreds, *user, *pass, *probeWrite, *batchSize, *outputFile)
+	verboseOutput(`Flag Values:
+	Endpoint: %s
+	IP: %s
+	IP File:%s
+	Port: %d
+	Probe Anon:%t
+	Probe Creds:%t
+	Username: %s
+	Password: %s
+	Probe Write: %t
+	Batch Size: %d
+	Output File: %s
+	Cleanup Certs: %t
+	Security Mode: %s
+	Security Policy: %s`,
+		*endpoint, *ip, *ipFile, *port, *probeAnon, *probeCreds, *user, *pass, *probeWrite, *batchSize, *outputFile, *cleanupCerts, *selectMode, *selectPolicy)
 
 	var massScan = false
 	if *ipFile != "" {
@@ -102,11 +122,11 @@ func main() {
 		fmt.Println("Targets: ", targets)
 		for i, endpoint := range targets {
 			fmt.Println(i + 1)
-			scanServer(ctx, &endpoint, user, pass, outputFile, *probeAnon, *probeCreds, *probeWrite, *rewriteHost, *batchSize)
+			scanServer(ctx, &endpoint, user, pass, outputFile, *probeAnon, *probeCreds, *probeWrite, *rewriteHost, *batchSize, *selectMode, *selectPolicy)
 		}
 	} else {
 		fmt.Println("Target: ", *endpoint)
-		scanServer(ctx, endpoint, user, pass, outputFile, *probeAnon, *probeCreds, *probeWrite, *rewriteHost, *batchSize)
+		scanServer(ctx, endpoint, user, pass, outputFile, *probeAnon, *probeCreds, *probeWrite, *rewriteHost, *batchSize, *selectMode, *selectPolicy)
 	}
 
 	if *cleanupCerts {
@@ -139,7 +159,7 @@ func parseIPFile(fileName string, port int) []string {
 	return targets
 }
 
-func scanServer(ctx context.Context, endpoint, user, pass, outputFile *string, probeAnon, probeCreds, probeWrite, rewriteHost bool, batchSize int) {
+func scanServer(ctx context.Context, endpoint, user, pass, outputFile *string, probeAnon, probeCreds, probeWrite, rewriteHost bool, batchSize int, selectMode, selectPolicy string) {
 	endpoints, err := opcua.GetEndpoints(ctx, *endpoint)
 
 	if err != nil {
@@ -165,6 +185,15 @@ func scanServer(ctx context.Context, endpoint, user, pass, outputFile *string, p
 
 		if rewriteHost {
 			rewriteEndpointHost(ep, dialledHost) // just reuse the already-computed value
+		}
+
+		secModeRaw := strings.ToLower(strings.TrimPrefix(ep.SecurityMode.String(), "MessageSecurityMode"))
+		if selectMode != "" && secModeRaw != strings.ToLower(selectMode) {
+			continue
+		}
+
+		if selectPolicy != "" && !strings.HasSuffix(strings.ToLower(ep.SecurityPolicyURI), strings.ToLower(selectPolicy)) {
+			continue
 		}
 
 		var methods []string
@@ -227,8 +256,9 @@ func scanServer(ctx context.Context, endpoint, user, pass, outputFile *string, p
 			color.Green("[*] Checking if Credential access works...")
 			runCredentialProbe(ctx, ep, *user, *pass)
 		}
-		if probeWrite && (anyAnonymous || anyCredential) {
-			runWriteableProbe(ctx, ep, *user, *pass, anyAnonymous, anyCredential, batchSize, *outputFile)
+		useCreds := anyCredential && *user != "" && *pass != ""
+		if probeWrite && (anyAnonymous || useCreds) {
+			runWriteableProbe(ctx, ep, *user, *pass, useCreds, batchSize, *outputFile)
 		}
 	}
 	fmt.Println("---")
@@ -283,7 +313,7 @@ func runCredentialProbe(ctx context.Context, endpoint *ua.EndpointDescription, u
 
 	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
-	fmt.Printf("[*] Attempting login with %s:%s\n", user, pass)
+	fmt.Printf("[*] Attempting login with %s:%s\n", user, strings.Repeat("*", len(pass)))
 
 	opts := []opcua.Option{
 		opcua.AuthUsername(user, pass),
@@ -312,37 +342,13 @@ func runCredentialProbe(ctx context.Context, endpoint *ua.EndpointDescription, u
 	color.Green("[+] credential login SUCCEEDED")
 }
 
-func runWriteableProbe(ctx context.Context, endpoint *ua.EndpointDescription, user, pass string, isAnon, isCreds bool, batchSize int, outputFile string) {
+func runWriteableProbe(ctx context.Context, endpoint *ua.EndpointDescription, user, pass string, useCreds bool, batchSize int, outputFile string) {
 	ctx, cancel := context.WithTimeout(ctx, 300*time.Second)
 	defer cancel()
 	var c *opcua.Client
 	var err error
 
-	if isAnon && !isCreds { //anon auth
-		fmt.Printf("[*] Attempting to find writeable tags on %s with Anonymous credentials\n", endpoint.EndpointURL)
-
-		opts := []opcua.Option{
-			opcua.AuthUsername(user, pass),
-			opcua.SecurityFromEndpoint(endpoint, ua.UserTokenTypeAnonymous),
-		}
-		if endpoint.SecurityMode != ua.MessageSecurityModeNone {
-			opts = append(opts,
-				opcua.CertificateFile("client_cert.pem"),
-				opcua.PrivateKeyFile("client_key.pem"),
-				opcua.ApplicationURI("urn:cdino:opcua-recon"),
-			)
-		}
-		c, err = opcua.NewClient(endpoint.EndpointURL, opts...)
-
-		if err != nil {
-			fmt.Printf("[-] could not build client: %v\n", err)
-			return
-		}
-		if err := c.Connect(ctx); err != nil {
-			color.Red("[-] anonymous login REJECTED (%v)\n", err)
-			return
-		}
-	} else { //cred auth
+	if useCreds { //cred auth
 		fmt.Printf("[*] Attempting to find writeable tags with %s:%s\n", user, pass)
 
 		opts := []opcua.Option{
@@ -363,6 +369,30 @@ func runWriteableProbe(ctx context.Context, endpoint *ua.EndpointDescription, us
 		}
 		if err := c.Connect(ctx); err != nil {
 			color.Red("[-] credential login REJECTED (%v)\n", err)
+			return
+		}
+	} else { //anon auth
+		fmt.Printf("[*] Attempting to find writeable tags on %s with Anonymous credentials\n", endpoint.EndpointURL)
+
+		opts := []opcua.Option{
+			opcua.AuthAnonymous(),
+			opcua.SecurityFromEndpoint(endpoint, ua.UserTokenTypeAnonymous),
+		}
+		if endpoint.SecurityMode != ua.MessageSecurityModeNone {
+			opts = append(opts,
+				opcua.CertificateFile("client_cert.pem"),
+				opcua.PrivateKeyFile("client_key.pem"),
+				opcua.ApplicationURI("urn:cdino:opcua-recon"),
+			)
+		}
+		c, err = opcua.NewClient(endpoint.EndpointURL, opts...)
+
+		if err != nil {
+			fmt.Printf("[-] could not build client: %v\n", err)
+			return
+		}
+		if err := c.Connect(ctx); err != nil {
+			color.Red("[-] anonymous login REJECTED (%v)\n", err)
 			return
 		}
 	}
@@ -387,7 +417,7 @@ func runWriteableProbe(ctx context.Context, endpoint *ua.EndpointDescription, us
 	verboseOutput("scan took %s, visited %d nodes", time.Since(start), len(visited))
 
 	if outputFile != "" {
-		appendCSV(outputFile, endpoint, isAnon, tags)
+		appendCSV(outputFile, endpoint, !useCreds, tags)
 	}
 	verboseOutput(prettyPrint(tags))
 
@@ -602,7 +632,7 @@ func generateCertificateForPolicy(policyURI, certPath, keyPath string) error {
 		Subject:      pkix.Name{CommonName: "opcua-recon-client", Organization: []string{"cdino"}},
 		NotBefore:    time.Now().Add(-time.Hour),
 		NotAfter:     time.Now().AddDate(1, 0, 0),
-		KeyUsage:     x509.KeyUsageContentCommitment | x509.KeyUsageKeyEncipherment | x509.KeyUsageDigitalSignature | x509.KeyUsageDataEncipherment, ExtKeyUsage: []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth, x509.ExtKeyUsageServerAuth},
+		KeyUsage:     x509.KeyUsageContentCommitment | x509.KeyUsageKeyEncipherment | x509.KeyUsageDigitalSignature | x509.KeyUsageDataEncipherment, ExtKeyUsage: []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth},
 		BasicConstraintsValid: true,
 		IsCA:                  false,
 		URIs:                  []*url.URL{appURI},

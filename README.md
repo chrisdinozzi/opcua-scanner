@@ -21,7 +21,7 @@ actually works, and scan for tags that are writeable by the authenticated sessio
 - `go mod tidy` to fetch `github.com/gopcua/opcua` and `github.com/fatih/color`
 
 ## Limitations
-- Credential probing does not yet support client-certificate authentication (see TODO)
+- Credential probing does not yet support client-certificate authentication
 
 ## Usage
 
@@ -41,6 +41,8 @@ actually works, and scan for tags that are writeable by the authenticated sessio
 | `-output-file` | Append writeable-tag findings to this CSV file |
 | `-verbose` | Enable diagnostic output |
 | `-cleanup-certs`| delete generated client certificate/key files when the scan finishes |
+| `-security-mode` | only probe endpoints with this security mode (e.g. None, Sign, SignAndEncrypt) |
+| `-security-policy` | only probe endpoints with this security policy (e.g. Basic256Sha256) |
 
 ### CSV output format
 When `-output-file` is set, each writeable tag found is appended as a row:
@@ -54,6 +56,18 @@ One target per line; port optional, otherwise defaults to `-port`:
 10.0.0.11:99009
 172.16.3.4
 ```
+### Valid values for `-select-mode`
+- `None`
+- `Sign`
+- `SignAndEncrypt`
+
+### Valid values for `-select-policy`
+- `None`
+- `Basic128Rsa15`
+- `Basic256`
+- `Basic256Sha256`
+- `Aes128_Sha256_RsaOaep`
+- `Aes256_Sha256_RsaPss`
 
 ## Build
 ```bash
