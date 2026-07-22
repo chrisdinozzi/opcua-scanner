@@ -58,7 +58,7 @@ by cdino
 
 func main() {
 	fmt.Println(banner)
-
+	time.Sleep(500 * time.Millisecond)
 	endpoint := flag.String("endpoint", "", "OPC-UA endpoint URL")
 	ip := flag.String("ip", "", "OPC-UA server IP")
 	ipFile := flag.String("ip-file", "", "New line deliminated file of IPs to scan")
